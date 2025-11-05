@@ -128,6 +128,31 @@ fn main() {
     }
 
     let mut script_bench = NamedTimer::start("Scripts");
+    // Save clean results to file if --save-clean was specified
+    if let Some(save_path) = &opts.save_clean {
+        use std::io::Write;
+        match std::fs::File::create(save_path) {
+            Ok(mut file) => {
+                let mut saved_count = 0;
+                for (ip, ports) in &ports_per_ip {
+                    for port in ports {
+                        if let Err(e) = writeln!(file, "{}:{}", ip, port) {
+                            eprintln!("Failed to write to file: {}", e);
+                            break;
+                        }
+                        saved_count += 1;
+                    }
+                }
+                if !opts.greppable {
+                    eprintln!("✓ Saved {} clean results to {:?}", saved_count, save_path);
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to create output file {:?}: {}", save_path, e);
+            }
+        }
+    }
+
     for (ip, ports) in &ports_per_ip {
         let vec_str_ports: Vec<String> = ports.iter().map(ToString::to_string).collect();
 

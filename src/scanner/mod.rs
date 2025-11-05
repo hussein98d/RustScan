@@ -83,9 +83,17 @@ impl Scanner {
         let mut errors: HashSet<String> = HashSet::new();
         let udp_map = get_parsed_data();
 
+        // Track open ports per IP to detect honeypots
+        use std::collections::HashMap;
+        let mut open_ports_per_ip: HashMap<IpAddr, usize> = HashMap::new();
+        let mut honeypot_ips: HashSet<IpAddr> = HashSet::new();
+
         for _ in 0..self.batch_size {
             if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket, udp_map.clone()));
+                // Skip if this IP is already identified as a honeypot
+                if !honeypot_ips.contains(&socket.ip()) {
+                    ftrs.push(self.scan_socket(socket, udp_map.clone()));
+                }
             } else {
                 break;
             }
@@ -99,11 +107,35 @@ impl Scanner {
 
         while let Some(result) = ftrs.next().await {
             if let Some(socket) = socket_iterator.next() {
-                ftrs.push(self.scan_socket(socket, udp_map.clone()));
+                // Skip if this IP is already identified as a honeypot
+                if !honeypot_ips.contains(&socket.ip()) {
+                    ftrs.push(self.scan_socket(socket, udp_map.clone()));
+                }
             }
 
             match result {
-                Ok(socket) => open_sockets.push(socket),
+                Ok(socket) => {
+                    let ip = socket.ip();
+
+                    // Track open ports for this IP
+                    let count = open_ports_per_ip.entry(ip).or_insert(0);
+                    *count += 1;
+
+                    // Check if this IP has exceeded the honeypot threshold (50 open ports)
+                    if *count > 50 && !honeypot_ips.contains(&ip) {
+                        honeypot_ips.insert(ip);
+                        if !self.greppable {
+                            eprintln!(
+                                "{}",
+                                format!("🚨 HONEYPOT DETECTED: {} (>50 open ports) - Stopping scan for this host", ip)
+                                    .red()
+                                    .bold()
+                            );
+                        }
+                    }
+
+                    open_sockets.push(socket);
+                }
                 Err(e) => {
                     let error_string = e.to_string();
                     if errors.len() < self.ips.len() * 1000 {
@@ -114,6 +146,26 @@ impl Scanner {
         }
         debug!("Typical socket connection errors {errors:?}");
         debug!("Open Sockets found: {:?}", &open_sockets);
+
+        // Filter out honeypot IPs from results
+        if !honeypot_ips.is_empty() {
+            let original_count = open_sockets.len();
+            open_sockets.retain(|socket| !honeypot_ips.contains(&socket.ip()));
+            let filtered_count = original_count - open_sockets.len();
+
+            if !self.greppable && filtered_count > 0 {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "✓ Filtered out {} ports from {} honeypot host(s)",
+                        filtered_count,
+                        honeypot_ips.len()
+                    )
+                    .yellow()
+                );
+            }
+        }
+
         open_sockets
     }
 

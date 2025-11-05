@@ -161,6 +161,10 @@ pub struct Opts {
     /// UDP scanning mode, finds UDP ports that send back responses
     #[arg(long)]
     pub udp: bool,
+
+    /// Save only clean results (excluding honeypots with >50 open ports) to a file. Example: --save-clean output.txt
+    #[arg(long, value_parser)]
+    pub save_clean: Option<PathBuf>,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -247,6 +251,7 @@ impl Default for Opts {
             exclude_ports: None,
             exclude_addresses: None,
             udp: false,
+            save_clean: None,
         }
     }
 }
