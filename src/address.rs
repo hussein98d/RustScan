@@ -1,5 +1,5 @@
 //! Provides functions to parse input IP addresses, CIDRs or files.
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{prelude::*, BufReader};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -26,18 +26,26 @@ use crate::warning;
 /// let mut opts = Opts::default();
 /// opts.addresses = vec!["192.168.0.0/30".to_owned()];
 ///
-/// let ips = parse_addresses(&opts);
+/// let (ips, _) = parse_addresses(&opts);
 /// ```
 ///
 /// Finally, any duplicates are removed to avoid excessive scans.
-pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
+/// Returns (Vec<IpAddr>, HashMap<IpAddr, String>) where the HashMap maps IP -> original domain name
+pub fn parse_addresses(input: &Opts) -> (Vec<IpAddr>, HashMap<IpAddr, String>) {
     let mut ips: Vec<IpAddr> = Vec::new();
+    let mut ip_to_domain: HashMap<IpAddr, String> = HashMap::new();
     let mut unresolved_addresses: Vec<&str> = Vec::new();
     let backup_resolver = get_resolver(&input.resolver);
 
     for address in &input.addresses {
-        let parsed_ips = parse_address(address, &backup_resolver);
+        let (parsed_ips, is_domain) = parse_address_with_context(address, &backup_resolver);
         if !parsed_ips.is_empty() {
+            if is_domain {
+                // Map all resolved IPs to this domain name
+                for ip in &parsed_ips {
+                    ip_to_domain.insert(*ip, address.clone());
+                }
+            }
             ips.extend(parsed_ips);
         } else {
             unresolved_addresses.push(address);
@@ -46,9 +54,9 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
 
     // If we got to this point this can only be a file path or the wrong input.
     for file_path in unresolved_addresses {
-        let file_path = Path::new(file_path);
+        let file_path_obj = Path::new(file_path);
 
-        if !file_path.is_file() {
+        if !file_path_obj.is_file() {
             warning!(
                 format!("Host {file_path:?} could not be resolved."),
                 input.greppable,
@@ -58,8 +66,9 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
             continue;
         }
 
-        if let Ok(x) = read_ips_from_file(file_path, &backup_resolver) {
+        if let Ok((x, mapping)) = read_ips_from_file(file_path_obj, &backup_resolver) {
             ips.extend(x);
+            ip_to_domain.extend(mapping);
         } else {
             warning!(
                 format!("Host {file_path:?} could not be resolved."),
@@ -75,7 +84,10 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
     let mut seen = BTreeSet::new();
     ips.retain(|ip| seen.insert(*ip) && !excluded_cidrs.iter().any(|cidr| cidr.contains(ip)));
 
-    ips
+    // Also clean up the mapping for any excluded IPs
+    ip_to_domain.retain(|ip, _| ips.contains(ip));
+
+    (ips, ip_to_domain)
 }
 
 /// Given a string, parse it as a host, IP address, or CIDR.
@@ -92,20 +104,28 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
 /// let ips = parse_address("127.0.0.1", &Resolver::default().unwrap());
 /// ```
 pub fn parse_address(address: &str, resolver: &Resolver) -> Vec<IpAddr> {
+    let (ips, _) = parse_address_with_context(address, resolver);
+    ips
+}
+
+/// Like parse_address but also returns whether the input was a domain name
+/// Returns (Vec<IpAddr>, is_domain: bool)
+fn parse_address_with_context(address: &str, resolver: &Resolver) -> (Vec<IpAddr>, bool) {
     if let Ok(addr) = IpAddr::from_str(address) {
         // `address` is an IP string
-        vec![addr]
+        (vec![addr], false)
     } else if let Ok(net_addr) = IpInet::from_str(address) {
         // `address` is a CIDR string
-        net_addr.network().into_iter().addresses().collect()
+        (net_addr.network().into_iter().addresses().collect(), false)
     } else {
         // `address` is a hostname or DNS name
         // attempt default DNS lookup
-        match format!("{address}:80").to_socket_addrs() {
+        let ips = match format!("{address}:80").to_socket_addrs() {
             Ok(mut iter) => vec![iter.next().unwrap().ip()],
             // default lookup didn't work, so try again with the dedicated resolver
             Err(_) => resolve_ips_from_host(address, resolver),
-        }
+        };
+        (ips, true) // is_domain = true
     }
 }
 
@@ -214,24 +234,33 @@ fn read_resolver_from_file(path: &str) -> Result<Vec<IpAddr>, std::io::Error> {
 
 #[cfg(not(tarpaulin_include))]
 /// Parses an input file of IPs and uses those
+/// Returns (Vec<IpAddr>, HashMap<IpAddr, String>) where the HashMap maps IP -> original domain name
 fn read_ips_from_file(
     ips: &std::path::Path,
     backup_resolver: &Resolver,
-) -> Result<Vec<IpAddr>, std::io::Error> {
+) -> Result<(Vec<IpAddr>, HashMap<IpAddr, String>), std::io::Error> {
     let file = File::open(ips)?;
     let reader = BufReader::new(file);
 
     let mut ips: Vec<IpAddr> = Vec::new();
+    let mut ip_to_domain: HashMap<IpAddr, String> = HashMap::new();
 
     for address_line in reader.lines() {
         if let Ok(address) = address_line {
-            ips.extend(parse_address(&address, backup_resolver));
+            let (parsed_ips, is_domain) = parse_address_with_context(&address, backup_resolver);
+            if is_domain {
+                // Map all resolved IPs to this domain name
+                for ip in &parsed_ips {
+                    ip_to_domain.insert(*ip, address.clone());
+                }
+            }
+            ips.extend(parsed_ips);
         } else {
             debug!("Line in file is not valid");
         }
     }
 
-    Ok(ips)
+    Ok((ips, ip_to_domain))
 }
 
 #[cfg(test)]
@@ -246,7 +275,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(
             ips,
@@ -267,7 +296,7 @@ mod tests {
             exclude_addresses: Some(vec!["192.168.0.1".to_owned()]),
             ..Default::default()
         };
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(
             ips,
@@ -286,7 +315,7 @@ mod tests {
             exclude_addresses: Some(vec!["192.168.0.0/30".to_owned()]),
             ..Default::default()
         };
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(
             ips,
@@ -306,7 +335,7 @@ mod tests {
             exclude_addresses: Some(vec!["192.168.0.1".to_owned()]),
             ..Default::default()
         };
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(
             ips,
@@ -325,7 +354,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 1);
     }
@@ -337,7 +366,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(ips, [Ipv4Addr::new(127, 0, 0, 1),]);
     }
@@ -349,7 +378,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert!(ips.is_empty());
     }
@@ -362,7 +391,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 3);
     }
@@ -375,7 +404,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 0);
     }
@@ -388,7 +417,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 0);
     }
@@ -400,7 +429,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 2_048);
     }
@@ -413,7 +442,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ips = parse_addresses(&opts);
+        let (ips, _) = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 256);
     }

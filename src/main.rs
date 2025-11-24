@@ -12,7 +12,6 @@ use rustscan::{detail, funny_opening, output, warning};
 use colorful::{Color, Colorful};
 use futures::executor::block_on;
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::string::ToString;
 use std::time::Duration;
 
@@ -66,7 +65,7 @@ fn main() {
         print_opening(&opts);
     }
 
-    let ips: Vec<IpAddr> = parse_addresses(&opts);
+    let (ips, ip_to_domain) = parse_addresses(&opts);
 
     if ips.is_empty() {
         warning!(
@@ -93,11 +92,12 @@ fn main() {
         opts.accessible,
         opts.exclude_ports.unwrap_or_default(),
         opts.udp,
+        ip_to_domain.clone(),
     );
     debug!("Scanner finished building: {scanner:?}");
 
     let mut portscan_bench = NamedTimer::start("Portscan");
-    let scan_result = block_on(scanner.run());
+    let (scan_result, ip_to_domain_map) = block_on(scanner.run());
     portscan_bench.end();
     benchmarks.push(portscan_bench);
 
@@ -136,7 +136,14 @@ fn main() {
                 let mut saved_count = 0;
                 for (ip, ports) in &ports_per_ip {
                     for port in ports {
-                        if let Err(e) = writeln!(file, "{}:{}", ip, port) {
+                        // Use domain name if available, otherwise use IP
+                        let output = if let Some(domain) = ip_to_domain_map.get(ip) {
+                            format!("{}:{}", domain, port)
+                        } else {
+                            format!("{}:{}", ip, port)
+                        };
+
+                        if let Err(e) = writeln!(file, "{}", output) {
                             eprintln!("Failed to write to file: {}", e);
                             break;
                         }

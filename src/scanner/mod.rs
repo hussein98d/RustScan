@@ -11,7 +11,7 @@ use async_std::prelude::*;
 use async_std::{io, net::UdpSocket};
 use colored::Colorize;
 use futures::stream::FuturesUnordered;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::{
     collections::HashSet,
     net::{IpAddr, Shutdown, SocketAddr},
@@ -37,6 +37,7 @@ pub struct Scanner {
     accessible: bool,
     exclude_ports: Vec<u16>,
     udp: bool,
+    ip_to_domain: HashMap<IpAddr, String>,
 }
 
 // Allowing too many arguments for clippy.
@@ -52,6 +53,7 @@ impl Scanner {
         accessible: bool,
         exclude_ports: Vec<u16>,
         udp: bool,
+        ip_to_domain: HashMap<IpAddr, String>,
     ) -> Self {
         Self {
             batch_size,
@@ -63,13 +65,14 @@ impl Scanner {
             accessible,
             exclude_ports,
             udp,
+            ip_to_domain,
         }
     }
 
     /// Runs scan_range with chunk sizes
     /// If you want to run RustScan normally, this is the entry point used
-    /// Returns all open ports as `Vec<u16>`
-    pub async fn run(&self) -> Vec<SocketAddr> {
+    /// Returns all open ports as `Vec<SocketAddr>` and the IP -> domain mapping
+    pub async fn run(&self) -> (Vec<SocketAddr>, HashMap<IpAddr, String>) {
         let ports: Vec<u16> = self
             .port_strategy
             .order()
@@ -166,7 +169,7 @@ impl Scanner {
             }
         }
 
-        open_sockets
+        (open_sockets, self.ip_to_domain.clone())
     }
 
     /// Given a socket, scan it self.tries times.
@@ -349,10 +352,18 @@ impl Scanner {
     /// Formats and prints the port status
     fn fmt_ports(&self, socket: SocketAddr) {
         if !self.greppable {
-            if self.accessible {
-                println!("Open {socket}");
+            let output = if let Some(domain) = self.ip_to_domain.get(&socket.ip()) {
+                // Use domain name instead of IP
+                format!("{}:{}", domain, socket.port())
             } else {
-                println!("Open {}", socket.to_string().purple());
+                // Fall back to IP:port
+                socket.to_string()
+            };
+
+            if self.accessible {
+                println!("Open {output}");
+            } else {
+                println!("Open {}", output.purple());
             }
         }
     }
