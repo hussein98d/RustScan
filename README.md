@@ -19,6 +19,8 @@ The Modern Port Scanner. **Find ports quickly (3 seconds at its fastest)**. Run 
 
 # 🛠️ Installation
 
+## Official Release
+
 You can install RustScan's binary from our [releases page](https://github.com/RustScan/RustScan/releases).
 
 We would prefer you to install with a package manager so it is tested and works for your system.
@@ -43,6 +45,26 @@ Arch:
   yay rustscan
 ```
 
+## Enhanced Fork with Honeypot Detection
+
+This fork includes advanced honeypot detection and domain name preservation features. Install from source:
+
+```bash
+# Install Rust if not already installed
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Clone the repository
+git clone https://github.com/hussein98d/RustScan.git
+cd RustScan
+
+# Build release binary
+cargo build --release
+
+# The binary will be at: target/release/rustscan
+# Optionally, move it to your PATH:
+sudo cp target/release/rustscan /usr/local/bin/
+```
+
 # ✨ Features
 
 - Scans all 65k ports in **3 seconds**.
@@ -50,6 +72,85 @@ Arch:
 - Adaptive learning. RustScan improves the more you use it. No bloated machine learning here, just basic maths.
 - The usuals you would expect. IPv6, CIDR, file input and more.
 - Automatically pipes ports into Nmap.
+
+## 🆕 Enhanced Fork Features
+
+This fork includes additional security-focused features:
+
+### 🍯 Honeypot Detection
+- **Real-time detection**: Automatically identifies and filters out honeypots during scanning
+- **Smart threshold**: Flags hosts with >50 open ports as likely honeypots
+- **Automatic filtering**: Removes false positives from results automatically
+- **Warning alerts**: Visual warnings when honeypots are detected
+
+### 🌐 Domain Name Preservation
+- **Human-readable output**: Shows `example.com:80` instead of `1.2.3.4:80`
+- **File input support**: Maintains domain names from input files
+- **Mixed format support**: Handles both IPs and domains seamlessly
+
+### 💾 Clean Results Export
+- **`--save-clean` flag**: Save only verified open ports (excluding honeypots) to a file
+- **Format**: `domain:port` or `IP:port` (one per line)
+- **Perfect for automation**: Clean output ready for piping into other tools
+
+### 📋 Usage Examples
+
+#### Basic domain scan with honeypot detection
+```bash
+rustscan -a example.com -r 1-1000 --scripts none
+# Output: Open example.com:80
+# Output: Open example.com:443
+```
+
+#### Scan from file with clean results export
+```bash
+rustscan -a domains.txt -r 1-65535 --scripts none --save-clean clean_results.txt
+# Automatically filters honeypots and saves: domain:port or IP:port
+```
+
+#### CIDR range scan with all ports
+```bash
+# Scan entire /20 subnet (4096 hosts)
+rustscan -a 17.157.64.0/20 -r 1-65535 -t 1500 --scripts none --ulimit 5000 --batch-size 2000
+
+# Scan /24 subnet (256 hosts)
+rustscan -a 192.168.1.0/24 -r 1-65535 -t 1500 --scripts none --ulimit 5000 --batch-size 2000
+```
+
+#### Mixed input (domains + IPs + CIDR)
+```bash
+# Create input file with mixed formats
+cat > targets.txt << EOF
+google.com
+1.1.1.1
+192.168.0.0/24
+example.com
+EOF
+
+# Scan with honeypot detection and clean output
+rustscan -a targets.txt -r 1-10000 -t 2000 --scripts none --ulimit 5000 --save-clean results.txt
+```
+
+#### High-speed scan with honeypot filtering
+```bash
+# Fast scan with automatic honeypot detection
+rustscan -a targets.txt -r 1-65535 -t 1500 --scripts none --ulimit 5000 --batch-size 2000 --save-clean clean.txt
+
+# If honeypot detected (>50 ports open), you'll see:
+# 🚨 HONEYPOT DETECTED: 107.20.239.228 (>50 open ports) - Stopping scan for this host
+# ✓ Filtered out 65535 ports from 1 honeypot host(s)
+```
+
+#### Output Format Comparison
+```bash
+# Traditional RustScan output (shows IPs):
+# Open 142.250.185.46:80
+# Open 142.250.185.46:443
+
+# Enhanced fork output (preserves domains):
+# Open google.com:80
+# Open google.com:443
+```
 
 ## ‼️ Important Links
 
