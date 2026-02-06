@@ -216,7 +216,7 @@ fn get_resolver(resolver: &Option<String>) -> Resolver {
         None => match Resolver::from_system_conf() {
             Ok(resolver) => resolver,
             Err(_) => {
-                Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap()
+                Resolver::new(ResolverConfig::cloudflare(), ResolverOpts::default()).unwrap()
             }
         },
     }
